@@ -1,0 +1,6 @@
+{
+  "name": "VideoEnhance Studio",
+  "description": "Production-grade neural video enhancement, 4K upscaling, 60/120 FPS interpolation, and AI media studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

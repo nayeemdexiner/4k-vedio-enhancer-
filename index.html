@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function() {
+        try {
+          var currentFetch = window.fetch;
+          var fetchDescriptor = {
+            get: function() {
+              return currentFetch;
+            },
+            set: function(fn) {
+              currentFetch = fn;
+            },
+            configurable: true,
+            enumerable: true
+          };
+          Object.defineProperty(window, 'fetch', fetchDescriptor);
+          if (window.Window && window.Window.prototype) {
+            try {
+              Object.defineProperty(window.Window.prototype, 'fetch', fetchDescriptor);
+            } catch (_) {}
+          }
+        } catch (err) {
+          // safe fallback
+        }
+
+        try {
+          var AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (AudioCtx && AudioCtx.prototype && AudioCtx.prototype.close) {
+            var originalClose = AudioCtx.prototype.close;
+            AudioCtx.prototype.close = function() {
+              if (this.state === 'closed') {
+                return Promise.resolve();
+              }
+              try {
+                return originalClose.call(this).catch(function() {});
+              } catch (_) {
+                return Promise.resolve();
+              }
+            };
+          }
+        } catch (err) {
+          // safe fallback
+        }
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>4K Video Exporter</title>
+    <meta name="description" content="Production-grade real-time video enhancement, 4K UHD upscaling, edge de-smudge, and ultra-high-definition video export engine." />
+    <meta property="og:title" content="4K Video Exporter" />
+    <meta property="og:description" content="Production-grade real-time video enhancement, 4K UHD upscaling, edge de-smudge, and ultra-high-definition video export engine." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
