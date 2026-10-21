@@ -45,13 +45,20 @@ export async function processVideoReal(
     );
   }
 
-  // Setup offscreen canvas at exact target resolution attached to document tree
-  // CRITICAL for Chromium: Canvas MUST be in the document tree so the GPU compositor
-  // can use zero-copy VRAM texture mailboxes for captureStream instead of 1GB/s IPC ReadPixels!
+  // Determine target FPS
+  let targetFps = source.fps || 30;
+  if (config.fps !== 'source') {
+    targetFps = Number(config.fps);
+  }
+
+  // Setup export canvas attached to the document tree in the active viewport
+  // CRITICAL for Chromium: Canvas MUST be in the active viewport with opacity 1.0
+  // so the GPU compositor grants full foreground VRAM texture bandwidth and zero throttling!
   const exportCanvas = document.createElement('canvas');
   exportCanvas.width = targetWidth;
   exportCanvas.height = targetHeight;
-  exportCanvas.style.cssText = 'position:fixed; left:-99999px; top:0; width:1px; height:1px; pointer-events:none; opacity:0; z-index:-999;';
+  const miniHeight = Math.max(60, Math.round(220 * (targetHeight / targetWidth)));
+  exportCanvas.style.cssText = `position:fixed; bottom:20px; left:20px; width:220px; height:${miniHeight}px; pointer-events:none; opacity:1.0; z-index:99999; border-radius:10px; border:2px solid rgba(255,255,255,0.4); box-shadow:0 12px 35px rgba(0,0,0,0.85); background:#000; object-fit:contain;`;
   document.body.appendChild(exportCanvas);
 
   let engine: WebGLEnhanceEngine | null = null;
@@ -62,40 +69,27 @@ export async function processVideoReal(
     throw new Error(`Failed to initialize WebGL pipeline for ${targetWidth}x${targetHeight}: ${String(err)}`);
   }
 
-  // Determine target FPS
-  let targetFps = source.fps || 30;
-  if (config.fps !== 'source') {
-    targetFps = Number(config.fps);
-  }
-
-  // Capture stream from canvas
+  // Capture stream from canvas at stable target FPS
   let stream: MediaStream;
-  let canvasTrack: MediaStreamTrack | null = null;
-  let canRequestFrame = false;
   try {
     stream = exportCanvas.captureStream(targetFps);
-    canvasTrack = stream.getVideoTracks()[0] || null;
-    canRequestFrame = Boolean(canvasTrack && typeof (canvasTrack as any).requestFrame === 'function');
   } catch (err) {
     if (exportCanvas.parentNode) exportCanvas.parentNode.removeChild(exportCanvas);
     engine?.destroy();
     throw new Error(`Browser stream capture unsupported for ${targetWidth}x${targetHeight} @ ${targetFps} FPS.`);
   }
 
-  // Setup video element for temporal frame stepping attached to DOM
-  // Kept fully visible as foreground monitor to guarantee maximum GPU decoder priority and zero throttling on camera motion
+  // Setup video element for playback
   const exportBlobUrl = source.rawFile ? URL.createObjectURL(source.rawFile) : source.blobUrl;
   const isDedicatedExportBlob = Boolean(source.rawFile);
 
   const video = document.createElement('video');
   video.src = exportBlobUrl;
-  // If video has audio, leave unmuted so AudioContext receives audio stream; speakers remain silent because AudioContext is not connected to destination
   video.muted = !(config.preserveAudio && source.hasAudio);
   video.volume = 1.0;
   video.playsInline = true;
   video.preload = 'auto';
-  // Visible mini-preview monitor ensures Chromium allocates top-tier hardware decoder cycles
-  video.style.cssText = 'position:fixed; bottom:16px; right:16px; width:160px; height:90px; opacity:1.0; pointer-events:none; z-index:99999; border-radius:10px; border:2px solid rgba(255,255,255,0.3); box-shadow:0 10px 30px rgba(0,0,0,0.8); background:#000; object-fit:cover;';
+  video.style.cssText = 'position:fixed; top:0; left:0; width:16px; height:16px; opacity:0.01; pointer-events:none; z-index:-999;';
   document.body.appendChild(video);
 
   const cleanupDOMVideo = () => {
@@ -213,11 +207,11 @@ export async function processVideoReal(
   const totalPixels = targetWidth * targetHeight;
   let targetBitrate = 8000000;
   if (totalPixels <= 854 * 480) {
-    targetBitrate = 1800000; // 1.8 Mbps (480p)
+    targetBitrate = 2000000; // 2.0 Mbps (480p)
   } else if (totalPixels <= 1280 * 720) {
-    targetBitrate = 3200000; // 3.2 Mbps (720p HD)
+    targetBitrate = 3500000; // 3.5 Mbps (720p HD)
   } else if (totalPixels <= 1920 * 1080) {
-    targetBitrate = 6000000; // 6 Mbps (1080p FHD Studio: fluid 60fps on all phones)
+    targetBitrate = 6500000; // 6.5 Mbps (1080p FHD Studio: fluid 60fps on all phones)
   } else if (totalPixels <= 2560 * 1440) {
     targetBitrate = 10000000; // 10 Mbps (1440p 2K QHD)
   } else if (totalPixels <= 3840 * 2160) {
@@ -299,7 +293,7 @@ export async function processVideoReal(
       engine?.destroy();
       safeCloseAudio();
 
-      const blobType = selectedMime || 'video/mp4';
+      const blobType = selectedMime || 'video/webm';
       const rawBlob = new Blob(chunks, { type: blobType });
 
       if (rawBlob.size === 0) {
@@ -307,7 +301,7 @@ export async function processVideoReal(
         return;
       }
 
-      // Patch WebM duration so players and phone gallery decoders never stall or freeze
+      // Patch WebM duration with verified fix-webm-duration engine so all media players seek and never freeze
       const outputBlob = await patchWebmDuration(rawBlob, duration);
 
       // Perform genuine post-render validation by reading the produced video
@@ -322,7 +316,8 @@ export async function processVideoReal(
         if (!finalFileName) {
           const cleanBase = source.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
           finalFileName = `${cleanBase}_enhanced_${config.resolution}_${targetFps}fps.${ext}`;
-        } else if (!finalFileName.endsWith(`.${ext}`)) {
+        } else {
+          // Always ensure the file extension matches the real container format
           finalFileName = `${finalFileName.replace(/\.[^/.]+$/, '')}.${ext}`;
         }
 
@@ -369,7 +364,7 @@ export async function processVideoReal(
       };
     };
 
-    // Frame-by-frame rendering synchronized with real-time video playback for 100% fluid motion
+    // Frame-by-frame rendering synchronized with real-time video playback for fluid motion
     const onFrame = () => {
       if (isFinished) return;
 
@@ -387,11 +382,6 @@ export async function processVideoReal(
 
       if (engine && video.readyState >= 2) {
         engine.renderFrame(video, filterOpts, targetWidth, targetHeight);
-        if (canRequestFrame && canvasTrack) {
-          try {
-            (canvasTrack as any).requestFrame();
-          } catch (_) {}
-        }
       }
 
       const cur = video.currentTime;
@@ -413,13 +403,8 @@ export async function processVideoReal(
       if (video.ended || cur >= duration - 0.05) {
         if (engine && video.readyState >= 2) {
           engine.renderFrame(video, filterOpts, targetWidth, targetHeight);
-          if (canRequestFrame && canvasTrack) {
-            try {
-              (canvasTrack as any).requestFrame();
-            } catch (_) {}
-          }
         }
-        setTimeout(stopRecording, 250);
+        setTimeout(stopRecording, 200);
         return;
       }
 
@@ -435,11 +420,6 @@ export async function processVideoReal(
       // Prime initial frame
       if (engine && video.readyState >= 2) {
         engine.renderFrame(video, filterOpts, targetWidth, targetHeight);
-        if (canRequestFrame && canvasTrack) {
-          try {
-            (canvasTrack as any).requestFrame();
-          } catch (_) {}
-        }
       }
 
       try {
@@ -466,7 +446,7 @@ export async function processVideoReal(
         playPromise.then(() => {
           onFrame();
         }).catch(() => {
-          // Fallback to muted play if policy requires it
+          // Fallback to muted play if browser policy requires it
           video.muted = true;
           video.play().then(() => {
             onFrame();
@@ -481,7 +461,6 @@ export async function processVideoReal(
     };
 
     // If video is already at the beginning (0.00s), start export session directly!
-    // Never wait for onseeked if time is already 0, because onseeked will not fire.
     if (video.currentTime <= 0.05) {
       startExportSession();
     } else {

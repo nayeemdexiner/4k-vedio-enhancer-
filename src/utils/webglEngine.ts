@@ -164,7 +164,7 @@ void main() {
     return;
   }
 
-  vec2 stepSize = 1.0 / max(u_sourceResolution, vec2(1.0));
+  vec2 stepSize = 1.0 / max(u_resolution, vec2(1.0));
   vec3 originalRgb = texture(u_image, uv).rgb;
 
   if (u_splitMode == 3) {

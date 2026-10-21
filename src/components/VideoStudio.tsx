@@ -112,7 +112,9 @@ export const VideoStudio: React.FC = () => {
     if (sourceMedia) {
       const cleanBase = sourceMedia.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
       const fpsLabel = config.fps === 'source' ? `${sourceMedia.fps || 30}fps` : `${config.fps}fps`;
-      const autoName = `${cleanBase}_enhanced_${config.resolution}_${fpsLabel}.mp4`;
+      const isWebmTarget = config.resolution === '4k' || config.resolution === '8k' || config.resolution === '16k';
+      const ext = isWebmTarget ? 'webm' : 'mp4';
+      const autoName = `${cleanBase}_enhanced_${config.resolution}_${fpsLabel}.${ext}`;
       setCustomExportName(autoName);
     }
   }, [sourceMedia, config.resolution, config.fps]);
@@ -407,6 +409,9 @@ export const VideoStudio: React.FC = () => {
       );
 
       setProcessedResult(result);
+      if (result.fileName) {
+        setCustomExportName(result.fileName);
+      }
       setRenderProgress(null);
     } catch (err) {
       setProcessingError(err instanceof Error ? err.message : 'Processing failure');
@@ -422,9 +427,14 @@ export const VideoStudio: React.FC = () => {
   // Download trigger
   const handleDownload = () => {
     if (!processedResult) return;
+    const ext = processedResult.mimeType.includes('mp4') ? 'mp4' : 'webm';
+    let downloadName = customExportName.trim() || processedResult.fileName;
+    if (!downloadName.endsWith(`.${ext}`)) {
+      downloadName = `${downloadName.replace(/\.[^/.]+$/, '')}.${ext}`;
+    }
     const a = document.createElement('a');
     a.href = processedResult.blobUrl;
-    a.download = customExportName.trim() || processedResult.fileName;
+    a.download = downloadName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
