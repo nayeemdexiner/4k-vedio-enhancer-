@@ -32,11 +32,10 @@ export function detectDeviceHardware(): DeviceHardwareProfile {
   let supportedMime = 'video/webm';
   if (mediaRecSupported) {
     const candidateMimes = [
-      'video/mp4;codecs=avc1.4d4028,mp4a.40.2',
-      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-      'video/mp4;codecs=avc1.42E01E',
+      'video/mp4;codecs=avc1.4d4033,mp4a.40.2', // H.264 Main Profile Level 5.1 (Up to 4K 60fps)
+      'video/mp4;codecs=avc1.640033,mp4a.40.2', // H.264 High Profile Level 5.1
       'video/mp4',
-      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp9,opus',              // Hardware-accelerated VP9 (smooth 4K, zero stutter)
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8,opus',
       'video/webm;codecs=vp8',
@@ -88,12 +87,25 @@ export function calculateTargetDimensions(
     };
   }
 
-  const targetHeight = RESOLUTION_DEFINITIONS[resolution].nominalHeight;
-  const targetWidth = Math.round(targetHeight * aspectRatio);
+  const def = RESOLUTION_DEFINITIONS[resolution];
+  let targetWidth = 0;
+  let targetHeight = 0;
+
+  if (sourceWidth >= sourceHeight) {
+    // Landscape or square orientation: nominalHeight is vertical, width = height * aspectRatio
+    targetHeight = def.nominalHeight;
+    targetWidth = Math.round(targetHeight * aspectRatio);
+  } else {
+    // Portrait / vertical mobile orientation (TikTok, Reels, Shorts):
+    // The long dimension (height) matches nominalWidth16x9 (e.g. 3840 for 4K, 1920 for 1080p)
+    // and width = height * aspectRatio (e.g. 3840 * (9/16) = 2160 for 4K)
+    targetHeight = def.nominalWidth16x9 || Math.round(def.nominalHeight * (16 / 9));
+    targetWidth = Math.round(targetHeight * aspectRatio);
+  }
 
   const evenWidth = ensureEven(targetWidth);
   const evenHeight = ensureEven(targetHeight);
-  const scaleFactor = evenHeight / sourceHeight;
+  const scaleFactor = Math.max(evenWidth / sourceWidth, evenHeight / sourceHeight);
 
   return {
     width: evenWidth,

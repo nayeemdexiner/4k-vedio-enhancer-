@@ -57,7 +57,7 @@ export const VideoStudio: React.FC = () => {
   // Enhancement Settings
   const [config, setConfig] = useState<EnhancementConfig>({
     resolution: '4k',
-    fps: 60,
+    fps: 'source',
     smudgeReduction: 45,
     denoiseStrength: 18,
     sharpenStrength: 55,

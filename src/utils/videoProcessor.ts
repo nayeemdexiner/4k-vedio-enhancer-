@@ -45,15 +45,20 @@ export async function processVideoReal(
     );
   }
 
-  // Setup offscreen canvas at exact target resolution
+  // Setup offscreen canvas at exact target resolution attached to document tree
+  // CRITICAL for Chromium: Canvas MUST be in the document tree so the GPU compositor
+  // can use zero-copy VRAM texture mailboxes for captureStream instead of 1GB/s IPC ReadPixels!
   const exportCanvas = document.createElement('canvas');
   exportCanvas.width = targetWidth;
   exportCanvas.height = targetHeight;
+  exportCanvas.style.cssText = 'position:fixed; left:-99999px; top:0; width:1px; height:1px; pointer-events:none; opacity:0; z-index:-999;';
+  document.body.appendChild(exportCanvas);
 
   let engine: WebGLEnhanceEngine | null = null;
   try {
     engine = new WebGLEnhanceEngine(exportCanvas);
   } catch (err) {
+    if (exportCanvas.parentNode) exportCanvas.parentNode.removeChild(exportCanvas);
     throw new Error(`Failed to initialize WebGL pipeline for ${targetWidth}x${targetHeight}: ${String(err)}`);
   }
 
@@ -65,14 +70,20 @@ export async function processVideoReal(
 
   // Capture stream from canvas
   let stream: MediaStream;
+  let canvasTrack: MediaStreamTrack | null = null;
+  let canRequestFrame = false;
   try {
     stream = exportCanvas.captureStream(targetFps);
+    canvasTrack = stream.getVideoTracks()[0] || null;
+    canRequestFrame = Boolean(canvasTrack && typeof (canvasTrack as any).requestFrame === 'function');
   } catch (err) {
+    if (exportCanvas.parentNode) exportCanvas.parentNode.removeChild(exportCanvas);
     engine?.destroy();
     throw new Error(`Browser stream capture unsupported for ${targetWidth}x${targetHeight} @ ${targetFps} FPS.`);
   }
 
-  // Setup video element for temporal frame stepping attached to DOM to keep hardware decoder active
+  // Setup video element for temporal frame stepping attached to DOM
+  // Kept fully visible as foreground monitor to guarantee maximum GPU decoder priority and zero throttling on camera motion
   const exportBlobUrl = source.rawFile ? URL.createObjectURL(source.rawFile) : source.blobUrl;
   const isDedicatedExportBlob = Boolean(source.rawFile);
 
@@ -83,12 +94,15 @@ export async function processVideoReal(
   video.volume = 1.0;
   video.playsInline = true;
   video.preload = 'auto';
-  // Use real dimensions so browser power-saver never pauses or throttles video hardware decoding
-  video.style.cssText = 'position:fixed; bottom:0; right:0; width:320px; height:180px; opacity:0.01; pointer-events:none; z-index:-99;';
+  // Visible mini-preview monitor ensures Chromium allocates top-tier hardware decoder cycles
+  video.style.cssText = 'position:fixed; bottom:16px; right:16px; width:160px; height:90px; opacity:1.0; pointer-events:none; z-index:99999; border-radius:10px; border:2px solid rgba(255,255,255,0.3); box-shadow:0 10px 30px rgba(0,0,0,0.8); background:#000; object-fit:cover;';
   document.body.appendChild(video);
 
   const cleanupDOMVideo = () => {
     try {
+      if (exportCanvas.parentNode) {
+        exportCanvas.parentNode.removeChild(exportCanvas);
+      }
       if (video.parentNode) {
         video.parentNode.removeChild(video);
       }
@@ -180,20 +194,36 @@ export async function processVideoReal(
 
   // Select codec and calculate optimal broadcast bitrate so output is razor sharp and lightweight
   let selectedMime = hardware.supportedMime;
+  // For 4K UHD and above: prioritize VP9 which natively encodes full 3840x2160 and 8K in Chromium without downscaling
+  if (targetWidth > 1920 || targetHeight > 1080) {
+    const vp9Candidates = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
+    for (const m of vp9Candidates) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) {
+        selectedMime = m;
+        break;
+      }
+    }
+  }
+
   const totalPixels = targetWidth * targetHeight;
-  let targetBitrate = 12000000;
+  let targetBitrate = 8000000;
   if (totalPixels <= 854 * 480) {
-    targetBitrate = 2200000; // 2.2 Mbps (480p)
+    targetBitrate = 1800000; // 1.8 Mbps (480p)
   } else if (totalPixels <= 1280 * 720) {
-    targetBitrate = 4500000; // 4.5 Mbps (720p HD)
+    targetBitrate = 3200000; // 3.2 Mbps (720p HD)
   } else if (totalPixels <= 1920 * 1080) {
-    targetBitrate = 10000000; // 10 Mbps (1080p FHD Studio)
+    targetBitrate = 6000000; // 6 Mbps (1080p FHD Studio: fluid 60fps on all phones)
   } else if (totalPixels <= 2560 * 1440) {
-    targetBitrate = 16000000; // 16 Mbps (1440p 2K QHD)
+    targetBitrate = 10000000; // 10 Mbps (1440p 2K QHD)
   } else if (totalPixels <= 3840 * 2160) {
-    targetBitrate = 26000000; // 26 Mbps (4K UHD Master: razor sharp, lightweight, smooth on phones)
+    targetBitrate = 16000000; // 16 Mbps (4K UHD Master: razor sharp, lightweight, plays silky smooth without stalls)
   } else {
-    targetBitrate = 38000000; // 38 Mbps (8K/16K)
+    targetBitrate = 24000000; // 24 Mbps (8K/16K)
   }
 
   let recorder: MediaRecorder;
@@ -357,6 +387,11 @@ export async function processVideoReal(
 
       if (engine && video.readyState >= 2) {
         engine.renderFrame(video, filterOpts, targetWidth, targetHeight);
+        if (canRequestFrame && canvasTrack) {
+          try {
+            (canvasTrack as any).requestFrame();
+          } catch (_) {}
+        }
       }
 
       const cur = video.currentTime;
@@ -378,8 +413,13 @@ export async function processVideoReal(
       if (video.ended || cur >= duration - 0.05) {
         if (engine && video.readyState >= 2) {
           engine.renderFrame(video, filterOpts, targetWidth, targetHeight);
+          if (canRequestFrame && canvasTrack) {
+            try {
+              (canvasTrack as any).requestFrame();
+            } catch (_) {}
+          }
         }
-        setTimeout(stopRecording, 120);
+        setTimeout(stopRecording, 250);
         return;
       }
 
@@ -395,10 +435,15 @@ export async function processVideoReal(
       // Prime initial frame
       if (engine && video.readyState >= 2) {
         engine.renderFrame(video, filterOpts, targetWidth, targetHeight);
+        if (canRequestFrame && canvasTrack) {
+          try {
+            (canvasTrack as any).requestFrame();
+          } catch (_) {}
+        }
       }
 
       try {
-        recorder.start(100);
+        recorder.start(500);
       } catch (recErr) {
         cleanupDOMVideo();
         engine?.destroy();
